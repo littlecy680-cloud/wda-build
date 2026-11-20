@@ -1,0 +1,113 @@
+# 云编译 WebDriverAgent（GitHub Actions macOS runner）
+# 一次手动触发，按「iOS 版本带」矩阵编译多个 WDA，各自产出未签名 Runner.app
+# 源码从 npm 包 appium-webdriveragent 拉取（对 GitHub 慢/不通的环境友好）
+# 后续本地：解压 artifact → zip Payload 改名 .ipa → 爱思/zsign 签名 → 装机
+#
+# 版本带与 WDA 版本的映射依据 appium 官方支持矩阵（2026-11 核对）：
+#   iOS 15–16  → WDA 5.8.5   （15.x 上限 5.8.5）
+#   iOS 17–18  → WDA 10.1.0  （17.x 上限 10.1.0；18.x 需 ≥8.9.1）
+#   iOS 26     → WDA 11.1.5  （26.4+ 需 ≥11.1.5，覆盖 26.0–26.3）
+#   iOS 27+    → WDA latest  （2026-11 实测 16.x 可用）
+# 注意：老 WDA 需要老 Xcode；某带编译失败时按报错切换 runner image /
+#   用 DEVELOPER_DIR 选旧 Xcode（README 有排查清单）。
+name: Build WebDriverAgent
+
+on:
+  workflow_dispatch:
+    inputs:
+      npm_registry:
+        description: 'npm registry（国内可用 https://registry.npmmirror.com）'
+        required: false
+        default: 'https://registry.npmjs.org'
+
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - band: 'ios15-16'
+            wda_version: '5.8.5'
+            runner: 'macos-15'
+          - band: 'ios17-18'
+            wda_version: '10.1.0'
+            runner: 'macos-15'
+          - band: 'ios26'
+            wda_version: '11.1.5'
+            runner: 'macos-latest'
+          - band: 'ios27'
+            wda_version: 'latest'
+            runner: 'macos-latest'
+    env:
+      NPM_REGISTRY: ${{ github.event.inputs.npm_registry || 'https://registry.npmjs.org' }}
+    steps:
+      - name: Checkout own repo (patch script)
+        uses: actions/checkout@v4
+
+      - name: Show environment
+        run: |
+          xcodebuild -version
+          node --version
+
+      - name: Fetch WebDriverAgent source (npm)
+        run: |
+          set -euxo pipefail
+          VER='${{ matrix.wda_version }}'
+          if [ "$VER" = "latest" ]; then
+            VER=$(npm view appium-webdriveragent version --registry="$NPM_REGISTRY")
+          fi
+          echo "WDA_VERSION=$VER" >> "$GITHUB_ENV"
+          mkdir -p src && cd src
+          if ! npm pack "appium-webdriveragent@$VER" --registry="$NPM_REGISTRY"; then
+            echo "[warn] npm 拉取失败，回退 GitHub clone（老版本可能只在 GitHub 有 tag）"
+            git clone --depth 1 --branch "v$VER" https://github.com/appium/WebDriverAgent.git .
+          else
+            tar -xzf appium-webdriveragent-*.tgz --strip-components=1
+            rm -f appium-webdriveragent-*.tgz
+          fi
+          ls | head -20
+
+      # 点开即启动补丁：非 XCTest 会话时 App 直接点开即起服务（对齐神目体验）
+      - name: Apply standalone boot patch
+        run: |
+          set -euxo pipefail
+          bash tools/wda-build/standalone-patch/patch-standalone.sh
+        working-directory: src
+
+      - name: Build unsigned Runner.app
+        working-directory: src
+        run: |
+          set -euxo pipefail
+          PROJ=$(ls -d WebDriverAgent.xcodeproj 2>/dev/null || true)
+          test -n "$PROJ" || { echo "未找到 WebDriverAgent.xcodeproj，检查包结构"; exit 1; }
+          xcodebuild -project WebDriverAgent.xcodeproj \
+            -scheme WebDriverAgentRunner \
+            -sdk iphoneos \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            build
+
+      - name: Collect app bundle
+        run: |
+          set -euxo pipefail
+          APP_SRC="src/build/Build/Products/Release-iphoneos/WebDriverAgentRunner-Runner.app"
+          test -d "$APP_SRC"
+          mkdir -p artifact/Payload
+          cp -R "$APP_SRC" artifact/Payload/WebDriverAgentRunner-Runner.app
+          cd artifact
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" Payload/*.app/Info.plist || true
+          /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion"  Payload/*.app/Info.plist || true
+          echo "band=${{ matrix.band }} wda=$WDA_VERSION" > BUILD-INFO.txt
+          zip -qry ../WDA-${{ matrix.band }}.zip .
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WDA-${{ matrix.band }}-wda${{ env.WDA_VERSION }}
+          path: WDA-${{ matrix.band }}.zip
+          retention-days: 14
