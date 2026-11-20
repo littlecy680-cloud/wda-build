@@ -179,33 +179,46 @@ jobs:
           hdiutil attach "$DMG" -nobrowse -readonly -mountpoint /Volumes/DDI158
           echo "[verify] DDI 顶层内容："
           ls /Volumes/DDI158
-          # 3. 定位 DDI 内的 XCTest 系框架目录
-          CORE_FW=$(find /Volumes/DDI158 -name 'XCTestCore.framework' | head -1)
-          test -n "$CORE_FW" || { echo "DDI 内未找到 XCTestCore.framework"; find /Volumes/DDI158 -type d | head -30; hdiutil detach /Volumes/DDI158 || true; exit 1; }
-          DDI_FW_DIR=$(dirname "$CORE_FW")
-          echo "[verify] DDI 框架目录: $DDI_FW_DIR"
-          ls "$DDI_FW_DIR"
-          # 4. DDI 侧全部导出符号（XCTest 系框架并集，glob 定位避免 find 兼容坑）
+          # 3. 定位 DDI 内所有 XCTest 系框架所在目录（umbrella 可能与核心框架不同目录）
+          echo "[verify] DDI 内全部 framework："
+          find /Volumes/DDI158 -name '*.framework' -type d | sort
+          UMB=$(find /Volumes/DDI158 -name 'XCTest.framework' -type d | head -1)
+          echo "[verify] XCTest umbrella 位置: ${UMB:-DDI 中未找到（仅记录）}"
+          DIRS=$(for n in XCTest XCTestCore XCTestSupport XCTAutomationSupport XCUIAutomation XCUnit Testing; do
+            find /Volumes/DDI158 -name "$n.framework" -type d
+          done | xargs -n1 dirname | sort -u)
+          echo "[verify] XCTest 系框架所在目录："
+          echo "$DIRS"
+          test -n "$DIRS" || { echo "DDI 内未找到任何 XCTest 系框架"; hdiutil detach /Volumes/DDI158 || true; exit 1; }
+          # 4. DDI 侧导出符号：逐目录收集（每个 nm 容错，部分 DDI 框架无主二进制属正常）
           DDI_EXPORTS=$(mktemp)
-          for fw in "$DDI_FW_DIR"/*.framework; do
-            nm -gU "$fw/$(basename "$fw" .framework)" 2>/dev/null | awk '{print $NF}'
-          done | sort -u > "$DDI_EXPORTS"
+          : > "$DDI_EXPORTS"
+          for d in $DIRS; do
+            for fw in "$d"/*.framework; do
+              nm -gU "$fw/$(basename "$fw" .framework)" 2>/dev/null | awk '{print $NF}' >> "$DDI_EXPORTS" || true
+            done
+          done
+          sort -u "$DDI_EXPORTS" -o "$DDI_EXPORTS"
           echo "[verify] DDI 导出符号数: $(wc -l < "$DDI_EXPORTS")"
           # 5. 新构建侧：剥离前的内嵌框架导出（= 剥离后由 DDI 承接的符号供给面）
           SRC_APP="src/build/Build/Products/Release-iphoneos/WebDriverAgentRunner-Runner.app"
           NEW_EXPORTS=$(mktemp)
+          : > "$NEW_EXPORTS"
           for fw in XCTest XCTestCore XCTestSupport XCTAutomationSupport XCUIAutomation XCUnit Testing; do
-            nm -gU "$SRC_APP/Frameworks/$fw.framework/$fw" 2>/dev/null | awk '{print $NF}'
-          done | sort -u > "$NEW_EXPORTS"
+            nm -gU "$SRC_APP/Frameworks/$fw.framework/$fw" 2>/dev/null | awk '{print $NF}' >> "$NEW_EXPORTS" || true
+          done
+          sort -u "$NEW_EXPORTS" -o "$NEW_EXPORTS"
           echo "[verify] 新框架导出符号数: $(wc -l < "$NEW_EXPORTS")"
           # 6. 产物引用的强未定义符号（主壳+xctest+WDA库）
           UNDEFS=$(mktemp)
+          : > "$UNDEFS"
           APPB="artifact/Payload/WebDriverAgentRunner-Runner.app"
           for bin in "$APPB/WebDriverAgentRunner-Runner" \
                      "$APPB/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner" \
                      "$APPB/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework/WebDriverAgentLib"; do
-            nm -u "$bin" 2>/dev/null | awk '$1=="U"{print $NF}'
-          done | sort -u > "$UNDEFS"
+            nm -u "$bin" 2>/dev/null | awk '$1=="U"{print $NF}' >> "$UNDEFS" || true
+          done
+          sort -u "$UNDEFS" -o "$UNDEFS"
           echo "[verify] 产物强未定义符号数: $(wc -l < "$UNDEFS")"
           # 7. 差集 = 产物需要、内嵌有、DDI 没有的符号
           NEEDED=$(mktemp)
