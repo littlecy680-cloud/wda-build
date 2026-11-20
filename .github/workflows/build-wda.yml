@@ -91,7 +91,7 @@ jobs:
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGN_ENTITLEMENTS="" \
-            build
+            build-for-testing
 
       - name: Collect app bundle
         run: |
@@ -123,9 +123,28 @@ jobs:
           echo "band=${{ matrix.band }} wda=$WDA_VERSION" > BUILD-INFO.txt
           zip -qry ../WDA-${{ matrix.band }}.zip .
 
+      # runxctest 产物：.xctestrun 文件 + 编译产品目录（PC 端 go-ios 远程拉起 WDA 用）
+      - name: Collect xctestrun products
+        run: |
+          set -euxo pipefail
+          XCTRUN=$(find src/build -maxdepth 3 -name '*.xctestrun' | head -1)
+          test -n "$XCTRUN" || { echo "未找到 .xctestrun（build-for-testing 是否成功？）"; ls src/build; exit 1; }
+          mkdir -p artifact-xctestrun
+          cp "$XCTRUN" artifact-xctestrun/
+          cp -R src/build/Build/Products/Release-iphoneos artifact-xctestrun/Release-iphoneos
+          cd artifact-xctestrun
+          zip -qry ../WDA-xctestrun-${{ matrix.band }}.zip .
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: WDA-${{ matrix.band }}-wda${{ env.WDA_VERSION }}
           path: WDA-${{ matrix.band }}.zip
+          retention-days: 14
+
+      - name: Upload xctestrun artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WDA-xctestrun-${{ matrix.band }}-wda${{ env.WDA_VERSION }}
+          path: WDA-xctestrun-${{ matrix.band }}.zip
           retention-days: 14
