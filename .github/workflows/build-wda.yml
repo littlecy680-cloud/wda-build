@@ -3,8 +3,21 @@
 # 源码从 npm 包 appium-webdriveragent 拉取（对 GitHub 慢/不通的环境友好）
 # 后续本地：解压 artifact → zip Payload 改名 .ipa → 爱思/zsign 签名 → 装机
 #
-# 版本带与 WDA 版本的映射依据 appium 官方支持矩阵（2026-11 核对）：
-#   iOS 15–16  → WDA 5.8.5   （15.x 上限 5.8.5）
+# ── ios15-16 带配方 v2（2026-11-20 逆向实锤 + 二次修订，勿改动核心要素）──
+#   神目包逆向结论：点开即用 = 原生 WDA 11.2.0 + 运行时加载 DDI 的 XCTest 框架
+#   （app 不内嵌 XCTest 系框架），代码零改动。神目靠 Xcode 15（SDK 17.0）构建
+#   天然不嵌；但 macos-14 镜像已于 2026-11-02 退役，现存镜像最低 Xcode 16.0
+#   （16.x 构建必内嵌 7 个 XCTest 框架，与 15.8 设备 DDI 不匹配 → 请求挂起 +
+#   80s SIGABRT，已真机实证）。
+#   因此 15-16 带采用【构建后剥离】：Xcode 16.4 构建 → 删除 app/Frameworks 里
+#   全部 XCTest 系框架（保留 libXCTestSwiftSupport.dylib）→ dyld 无处可寻时走
+#   内置回退 /Developer/Library/Frameworks（DDI 挂载点）加载系统配套 XCTestCore。
+#   运行时形态与神目完全等价（两边主壳均无 LC_RPATH，靠同一 dyld 回退机制，
+#   已用崩溃日志实证：嵌入框架存在时被优先加载，删除后必落到 DDI）。
+#   剩余风险（真机验收）：16.4 模板可能引用 15.8 DDI 没有的符号（如 XCTestDriver）
+#   → 若启动即崩，崩溃日志会写明缺哪个符号，按报错走 Plan B。
+#
+# 其他版本带与 WDA 版本的映射依据 appium 官方支持矩阵（2026-11 核对）：
 #   iOS 17–18  → WDA 10.1.0  （17.x 上限 10.1.0；18.x 需 ≥8.9.1）
 #   iOS 26     → WDA 11.1.5  （26.4+ 需 ≥11.1.5，覆盖 26.0–26.3）
 #   iOS 27+    → WDA latest  （2026-11 实测 16.x 可用）
@@ -28,17 +41,25 @@ jobs:
       matrix:
         include:
           - band: 'ios15-16'
-            wda_version: '5.8.5'
+            wda_version: '11.2.0'
             runner: 'macos-15'
+            standalone_patch: false
+            require_no_embedded_xctest: true
           - band: 'ios17-18'
             wda_version: '10.1.0'
             runner: 'macos-15'
+            standalone_patch: true
+            require_no_embedded_xctest: false
           - band: 'ios26'
             wda_version: '11.1.5'
             runner: 'macos-latest'
+            standalone_patch: true
+            require_no_embedded_xctest: false
           - band: 'ios27'
             wda_version: 'latest'
             runner: 'macos-latest'
+            standalone_patch: true
+            require_no_embedded_xctest: false
     env:
       NPM_REGISTRY: ${{ github.event.inputs.npm_registry || 'https://registry.npmjs.org' }}
     steps:
@@ -68,8 +89,9 @@ jobs:
           fi
           ls | head -20
 
-      # 点开即启动补丁 + 改名改图标
+      # 点开即启动补丁 + 改名改图标（仅 17+ 带；15-16 带走原生配方，禁止补丁）
       - name: Apply standalone boot patch
+        if: ${{ matrix.standalone_patch }}
         working-directory: src
         run: bash "$GITHUB_WORKSPACE/tools/wda-build/standalone-patch/patch-standalone.sh"
         env:
@@ -117,11 +139,86 @@ jobs:
           fi
           echo -n "[post] 验证 CFBundleDisplayName = "
           /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$APP/Info.plist"
+          # ---- 配方核心（ios15-16）：剥离内嵌 XCTest 系框架，运行时改用设备 DDI 的 XCTest ----
+          if [ "${{ matrix.require_no_embedded_xctest }}" = "true" ]; then
+            echo "[recipe] 剥离前 Frameworks/ 内容："
+            ls "$APP/Frameworks/" || true
+            for fw in XCTest XCTestCore XCTestSupport XCTAutomationSupport XCUIAutomation XCUnit Testing; do
+              rm -rf "$APP/Frameworks/$fw.framework"
+            done
+            echo "[recipe] 剥离后 Frameworks/ 内容："
+            ls "$APP/Frameworks/" || true
+          fi
+          # ---- 配方校验（ios15-16）：app 不得内嵌 XCTest 框架（内嵌=与设备 DDI 不匹配，点开模式必坏）----
+          if [ "${{ matrix.require_no_embedded_xctest }}" = "true" ]; then
+            if ls "$APP/Frameworks/" 2>/dev/null | grep -q '^XCTestCore.framework$'; then
+              echo "[recipe] 错误：剥离后仍存在 XCTestCore.framework，终止。"
+              exit 1
+            fi
+            echo "[recipe] 校验通过：无内嵌 XCTest 系框架，运行时将使用设备 DDI 的 XCTest（与神目包运行时同构）"
+          fi
           cd artifact
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" Payload/*.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion"  Payload/*.app/Info.plist || true
           echo "band=${{ matrix.band }} wda=$WDA_VERSION" > BUILD-INFO.txt
           zip -qry ../WDA-${{ matrix.band }}.zip .
+
+      # 风险消除（ios15-16）：剥离后 app 将加载设备 DDI 的 XCTest——本步骤用真实 15.8 DDI
+      # 做符号级校验：新构建引用的（由 XCTest 框架提供的）符号若在 DDI 中不存在，
+      # 装到真机会启动即崩。任何一个缺失都 fail 并打印精确符号名，把风险拦在 CI 阶段。
+      - name: Verify DDI symbol compatibility (ios15-16)
+        if: ${{ matrix.require_no_embedded_xctest }}
+        run: |
+          set -euxo pipefail
+          # 1. 下载 15.8 DDI（与真机测试设备同版本）
+          curl -sL --retry 5 --retry-delay 2 -o ddi158.zip https://raw.githubusercontent.com/JinjunHan/iOSDeviceSupport/master/iOSDeviceSupport/15.8.zip
+          unzip -o ddi158.zip -d ddi158
+          DMG=$(find ddi158 -name 'DeveloperDiskImage.dmg' | head -1)
+          test -n "$DMG" || { echo "未找到 DDI dmg"; exit 1; }
+          # 2. 挂载到 runner
+          hdiutil attach "$DMG" -nobrowse -readonly -mountpoint /Volumes/DDI158
+          echo "[verify] DDI 顶层内容："
+          ls /Volumes/DDI158
+          # 3. 定位 DDI 内的 XCTest 系框架目录
+          CORE_FW=$(find /Volumes/DDI158 -name 'XCTestCore.framework' | head -1)
+          test -n "$CORE_FW" || { echo "DDI 内未找到 XCTestCore.framework"; find /Volumes/DDI158 -type d | head -30; hdiutil detach /Volumes/DDI158 || true; exit 1; }
+          DDI_FW_DIR=$(dirname "$CORE_FW")
+          echo "[verify] DDI 框架目录: $DDI_FW_DIR"
+          ls "$DDI_FW_DIR"
+          # 4. DDI 侧全部导出符号（XCTest 系框架并集，glob 定位避免 find 兼容坑）
+          DDI_EXPORTS=$(mktemp)
+          for fw in "$DDI_FW_DIR"/*.framework; do
+            nm -gU "$fw/$(basename "$fw" .framework)" 2>/dev/null | awk '{print $NF}'
+          done | sort -u > "$DDI_EXPORTS"
+          echo "[verify] DDI 导出符号数: $(wc -l < "$DDI_EXPORTS")"
+          # 5. 新构建侧：剥离前的内嵌框架导出（= 剥离后由 DDI 承接的符号供给面）
+          SRC_APP="src/build/Build/Products/Release-iphoneos/WebDriverAgentRunner-Runner.app"
+          NEW_EXPORTS=$(mktemp)
+          for fw in XCTest XCTestCore XCTestSupport XCTAutomationSupport XCUIAutomation XCUnit Testing; do
+            nm -gU "$SRC_APP/Frameworks/$fw.framework/$fw" 2>/dev/null | awk '{print $NF}'
+          done | sort -u > "$NEW_EXPORTS"
+          echo "[verify] 新框架导出符号数: $(wc -l < "$NEW_EXPORTS")"
+          # 6. 产物引用的强未定义符号（主壳+xctest+WDA库）
+          UNDEFS=$(mktemp)
+          APPB="artifact/Payload/WebDriverAgentRunner-Runner.app"
+          for bin in "$APPB/WebDriverAgentRunner-Runner" \
+                     "$APPB/PlugIns/WebDriverAgentRunner.xctest/WebDriverAgentRunner" \
+                     "$APPB/PlugIns/WebDriverAgentRunner.xctest/Frameworks/WebDriverAgentLib.framework/WebDriverAgentLib"; do
+            nm -u "$bin" 2>/dev/null | awk '$1=="U"{print $NF}'
+          done | sort -u > "$UNDEFS"
+          echo "[verify] 产物强未定义符号数: $(wc -l < "$UNDEFS")"
+          # 7. 差集 = 产物需要、内嵌有、DDI 没有的符号
+          NEEDED=$(mktemp)
+          comm -12 "$UNDEFS" "$NEW_EXPORTS" > "$NEEDED"
+          MISSING=$(comm -23 "$NEEDED" "$DDI_EXPORTS")
+          if [ -n "$MISSING" ]; then
+            echo "[verify] ❌ 缺失符号（15.8 DDI 不存在，装机会启动崩溃）："
+            echo "$MISSING"
+            hdiutil detach /Volumes/DDI158 || true
+            exit 1
+          fi
+          echo "[verify] ✅ 校验通过：产物引用的全部 XCTest 符号在 15.8 DDI 中均存在（缺失数 0）"
+          hdiutil detach /Volumes/DDI158
 
       # runxctest 产物：.xctestrun 文件 + 编译产品目录（PC 端 go-ios 远程拉起 WDA 用）
       - name: Collect xctestrun products
