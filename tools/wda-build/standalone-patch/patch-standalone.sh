@@ -112,11 +112,6 @@ if [ -n "$APP_ICON" ] && [ -f "$APP_ICON" ]; then
 }
 JSONEOF
     echo "[patch] 应用图标 -> $SET"
-    PROJ=$(find . -name 'project.pbxproj' -not -path '*/build/*' 2>/dev/null | head -1)
-    if [ -n "$PROJ" ]; then
-      APPICON_SETTING=$(grep -m1 'ASSETCATALOG_COMPILER_APPICON_NAME' "$PROJ" || echo "(默认 AppIcon)")
-      echo "[patch] 工程 AppIcon 设置: $APPICON_SETTING（若非 AppIcon 需在 CI 里改 build setting）"
-    fi
   else
     echo "[patch] 未找到 Assets.xcassets，图标未替换" >&2
   fi
