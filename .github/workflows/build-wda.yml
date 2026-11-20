@@ -69,11 +69,10 @@ jobs:
           ls | head -20
 
       # 点开即启动补丁：非 XCTest 会话时 App 直接点开即起服务（对齐神目体验）
+      # cwd 必须在 src（脚本内 find 从这里找 FBWebServer.m），脚本本体用 GITHUB_WORKSPACE 绝对路径引用
       - name: Apply standalone boot patch
-        run: |
-          set -euxo pipefail
-          bash tools/wda-build/standalone-patch/patch-standalone.sh
         working-directory: src
+        run: bash "$GITHUB_WORKSPACE/tools/wda-build/standalone-patch/patch-standalone.sh"
 
       - name: Build unsigned Runner.app
         working-directory: src
