@@ -68,4 +68,60 @@ else
   echo "[patch] 未找到 Runner Info.plist（后台模式未写入，仅影响后台保活）"
 fi
 
+# ---------------------------------------------------------------
+# 3. 应用显示名（手机桌面图标下方的名字）
+#    环境变量 APP_NAME 可覆盖，默认「宇宙投屏」
+# ---------------------------------------------------------------
+APP_NAME="${APP_NAME:-宇宙投屏}"
+if [ -n "$PLIST" ]; then
+  if ! /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$PLIST" 2>/dev/null; then
+    /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$PLIST" 2>/dev/null || true
+  fi
+  if ! /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$PLIST" 2>/dev/null; then
+    /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$PLIST" 2>/dev/null || true
+  fi
+  echo "[patch] 应用显示名 -> $APP_NAME"
+fi
+
+# ---------------------------------------------------------------
+# 4. 应用图标（1024x1024 单尺寸，Xcode 编译时自动派生全尺寸）
+#    环境变量 APP_ICON 指向图标 PNG，缺省跳过
+# ---------------------------------------------------------------
+APP_ICON="${APP_ICON:-}"
+if [ -n "$APP_ICON" ] && [ -f "$APP_ICON" ]; then
+  AC=$(find . -type d -name 'Assets.xcassets' -path '*Runner*' -not -path '*/build/*' 2>/dev/null | head -1)
+  if [ -z "$AC" ]; then
+    AC=$(find . -type d -name 'Assets.xcassets' -not -path '*/build/*' 2>/dev/null | head -1)
+  fi
+  if [ -n "$AC" ]; then
+    SET="$AC/AppIcon.appiconset"
+    rm -rf "$SET"
+    mkdir -p "$SET"
+    cp "$APP_ICON" "$SET/icon-1024.png"
+    cat > "$SET/Contents.json" <<'JSONEOF'
+{
+  "images" : [
+    {
+      "filename" : "icon-1024.png",
+      "idiom" : "universal",
+      "platform" : "ios",
+      "size" : "1024x1024"
+    }
+  ],
+  "info" : { "author" : "xcode", "version" : 1 }
+}
+JSONEOF
+    echo "[patch] 应用图标 -> $SET"
+    PROJ=$(find . -name 'project.pbxproj' -not -path '*/build/*' 2>/dev/null | head -1)
+    if [ -n "$PROJ" ]; then
+      APPICON_SETTING=$(grep -m1 'ASSETCATALOG_COMPILER_APPICON_NAME' "$PROJ" || echo "(默认 AppIcon)")
+      echo "[patch] 工程 AppIcon 设置: $APPICON_SETTING（若非 AppIcon 需在 CI 里改 build setting）"
+    fi
+  else
+    echo "[patch] 未找到 Assets.xcassets，图标未替换" >&2
+  fi
+else
+  echo "[patch] 未提供 APP_ICON，跳过图标替换"
+fi
+
 echo "[patch] 完成"
