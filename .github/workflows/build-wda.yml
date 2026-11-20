@@ -100,6 +100,23 @@ jobs:
           test -d "$APP_SRC"
           mkdir -p artifact/Payload
           cp -R "$APP_SRC" artifact/Payload/WebDriverAgentRunner-Runner.app
+          APP="artifact/Payload/WebDriverAgentRunner-Runner.app"
+          # ---- 构建后处理（Xcode 模板生成 Info.plist / 不编译 xcassets，改源文件无效，必须改最终产物）----
+          APP_NAME='宇宙投屏'
+          /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $APP_NAME" "$APP/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string $APP_NAME" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP/Info.plist" 2>/dev/null \
+            || /usr/libexec/PlistBuddy -c "Add :CFBundleName string $APP_NAME" "$APP/Info.plist"
+          echo "[post] 显示名 -> $APP_NAME"
+          ICON="${{ github.workspace }}/tools/wda-build/appicon/icon-1024.png"
+          if [ -f "$ICON" ]; then
+            cp "$ICON" "$APP/icon-1024.png"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles array" "$APP/Info.plist" 2>/dev/null || true
+            /usr/libexec/PlistBuddy -c "Add :CFBundleIconFiles:0 string icon-1024.png" "$APP/Info.plist" 2>/dev/null || true
+            echo "[post] 图标 -> $APP/icon-1024.png (CFBundleIconFiles)"
+          fi
+          echo -n "[post] 验证 CFBundleDisplayName = "
+          /usr/libexec/PlistBuddy -c "Print :CFBundleDisplayName" "$APP/Info.plist"
           cd artifact
           /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" Payload/*.app/Info.plist || true
           /usr/libexec/PlistBuddy -c "Print :MinimumOSVersion"  Payload/*.app/Info.plist || true
