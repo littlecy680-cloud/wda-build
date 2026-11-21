@@ -156,16 +156,26 @@ jobs:
             # Xcode16 的 libXCTestSwiftSupport.dylib 依赖 Testing.framework（Swift Testing，
             # iOS≤16 的 DDI 没有、又被剥离），导致 dlopen 测试包失败（Error 103 / 点开静默失败）。
             # WDA 全 ObjC 零 Swift，该 dylib 是模板累赘 → 用零依赖 stub 替换。
-            cat > swift_stub.c <<'EOF'
-/* yuzhou stub: 占位 @rpath/libXCTestSwiftSupport.dylib，零依赖 */
-__attribute__((visibility("default"))) void yuzhou_stub_swift_support(void) {}
-EOF
+            printf '%s\n' \
+              '/* yuzhou stub: 占位 @rpath/libXCTestSwiftSupport.dylib，零依赖 */' \
+              '__attribute__((visibility("default"))) void yuzhou_stub_swift_support(void) {}' \
+              > swift_stub.c
             clang -arch arm64 -miphoneos-version-min=13.0 \
               -isysroot "$(xcrun --sdk iphoneos --show-sdk-path)" \
               -dynamiclib -install_name @rpath/libXCTestSwiftSupport.dylib \
               swift_stub.c -o "$APP/Frameworks/libXCTestSwiftSupport.dylib"
-            echo "[fix] SwiftSupport 已替换为零依赖 stub，其依赖表："
-            otool -L "$APP/Frameworks/libXCTestSwiftSupport.dylib"
+            # ---- stub 自校验（任何一项不满足立即 fail，杜绝带病产物）----
+            STUB="$APP/Frameworks/libXCTestSwiftSupport.dylib"
+            test -f "$STUB"
+            lipo -info "$STUB" | grep -q arm64
+            otool -D "$STUB" | grep -q '@rpath/libXCTestSwiftSupport.dylib'
+            STUB_DEPS=$(otool -L "$STUB" | grep -vE 'libXCTestSwiftSupport|libSystem' || true)
+            if [ -n "$STUB_DEPS" ]; then
+              echo "[fix] 错误：stub 存在多余依赖："
+              echo "$STUB_DEPS"
+              exit 1
+            fi
+            echo "[fix] SwiftSupport stub 自校验通过（存在 / arm64 / install_name 正确 / 零多余依赖）"
           fi
           # ---- 配方校验（ios15-16）：app 不得内嵌 XCTest 框架（内嵌=与设备 DDI 不匹配，点开模式必坏）----
           if [ "${{ matrix.require_no_embedded_xctest }}" = "true" ]; then
