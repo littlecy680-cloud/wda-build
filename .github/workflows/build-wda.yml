@@ -3,20 +3,20 @@
 # 源码从 npm 包 appium-webdriveragent 拉取（对 GitHub 慢/不通的环境友好）
 # 后续本地：解压 artifact → zip Payload 改名 .ipa → 爱思/zsign 签名 → 装机
 #
-# ── 配方说明（2026-11-21 四带统一 + 15-18 合并，勿改动核心要素）──
+# ── 配方说明（2026-11-21 四带统一 + 14-18 合并，勿改动核心要素）──
 #   神目包逆向实锤：点开即用 = 原生 WDA 11.2.0 + 运行时加载设备配套的 XCTest 框架
 #   （app 不内嵌 XCTest 系框架），代码零改动。神目两个包是同一个 WDA 11.2.0 核心，
 #   商业标注覆盖 iOS 15–18.6.2 与 17.2–27 —— 即同一配方全谱系有效。
 #   17/18 与 15/16 的差异不在包里（二进制完全相同），在运行时机制：
 #   17+ 设备经 cryptex 挂载点 /System/Developer/Library/Frameworks 加载 XCTest +
 #   PC 端需隧道（go-ios tunnel）——均由 PC 端按系统版本路由，与包无关。
-#   故 15–18 合并为一个包（产品决策：13/14 不支持）。
+#   故 14–18 合并为一个包（WDA 11.2.0 minOS=13.0，iOS 14 可安装；产品决策：13 以下不支持）。
 #   现 CI 镜像最低 Xcode 16.0（16.x 构建必内嵌 7 个 XCTest 框架，与设备不匹配 →
 #   请求挂起 + 自杀，15.8 真机实证），因此统一采用【构建后剥离 + SwiftSupport
 #   零依赖 stub 替换】（15.8 真机全链验证通过的配方）。
 #   - 全部带：WDA 11.2.0 + macos-15(Xcode16.4) + 剥离 + stub + 宇宙投屏品牌 + 原生零补丁
-#   - DDI 符号级校验仅 ios15-18（26/27 是个性化 cryptex，无 DDI 镜像可挂载校验）
-#   - 分发终态：ios15-18（主力包，一个包覆盖 95%+ 设备）+ ios26 + ios27（长尾，按需）
+#   - DDI 符号级校验仅 ios14-18（26/27 是个性化 cryptex，无 DDI 镜像可挂载校验）
+#   - 分发终态：ios14-18（主力包，一个包覆盖 95%+ 设备）+ ios26 + ios27（长尾，按需）
 #
 # 其他版本带与 WDA 版本的映射依据 appium 官方支持矩阵（2026-11 核对）：
 #   iOS 17–18  → WDA 10.1.0  （17.x 上限 10.1.0；18.x 需 ≥8.9.1）
@@ -41,7 +41,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - band: 'ios15-18'
+          - band: 'ios14-18'
             wda_version: '11.2.0'
             runner: 'macos-15'
             standalone_patch: false
